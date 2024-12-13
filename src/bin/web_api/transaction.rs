@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
 use axum::{extract::State, http::StatusCode, Json};
-use bank_case::internal::{
-    account::domain::Account, error::BankError, transaction::{Transaction, TransactionManager}
-};
+use bank_case::internal::{account::domain::Account, error::BankError};
 use serde::Deserialize;
 
 use crate::AppState;
