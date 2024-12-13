@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use sqlx::{types::BigDecimal, Acquire};
 
 use crate::internal::error::BankError;
@@ -16,21 +14,47 @@ impl<'a> AccountManager<'a> {
     }
 
     pub async fn create_account(&self) -> Result<Account, impl BankError> {
-        let mut tx = self.db_pool.begin().await.unwrap();
+        let mut tx = match self.db_pool.begin().await {
+            Ok(tx) => tx,
+            Err(e) => {
+                println!("Error starting database transaction: {}", e);
+                return Err(AccountError::new(
+                    "An unexpected error happened, please try again".to_string(),
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                ));
+            }
+        };
 
-        let conn = tx.acquire().await.unwrap();
+        let conn = match tx.acquire().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                println!("Error getting database connection: {}", e);
+                return Err(AccountError::new(
+                    "An unexpected error happened, please try again".to_string(),
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                ));
+            }
+        };
 
         let latest_number = sqlx::query!("SELECT number FROM account ORDER BY number DESC LIMIT 1")
-            .fetch_optional(conn)
-            .await
-            .unwrap();
+            .fetch_optional(&mut *conn)
+            .await;
+
+        let latest_number = match latest_number {
+            Ok(latest_number) => latest_number,
+            Err(e) => {
+                println!("Error getting latest account number: {}", e);
+                return Err(AccountError::new(
+                    "An unexpected error happened, please try again".to_string(),
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                ));
+            }
+        };
 
         let account: Account = Account::new(match latest_number {
             None => 1,
             Some(latest_number) => latest_number.number + 1,
         });
-
-        let conn = tx.acquire().await.unwrap();
 
         let res = sqlx::query!(
             "INSERT INTO account (id, number) VALUES ($1, $2)",
@@ -42,11 +66,24 @@ impl<'a> AccountManager<'a> {
 
         match res {
             Ok(_) => {
-                tx.commit().await.unwrap();
-                return Ok(account);
+                match tx.commit().await {
+                    Ok(_) => {
+                        return Ok(account);
+                    }
+                    Err(e) => {
+                        println!("Error committing transaction: {}", e);
+                        return Err(AccountError::new(
+                            "An unexpected error happened, please try again".to_string(),
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        ));
+                    }
+                };
             }
             Err(e) => {
-                tx.rollback().await.unwrap();
+                if let Err(e) = tx.rollback().await {
+                    println!("Error rolling back transaction: {}", e);
+                }
+
                 return Err(AccountError::new(
                     e.to_string(),
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -82,9 +119,7 @@ impl<'a> AccountManager<'a> {
 
         match balance {
             Ok(balance) => {
-                let balance = balance
-                    .sum
-                    .unwrap_or(BigDecimal::from_str("0").expect("Should always work"));
+                let balance = balance.sum.unwrap_or(0.into());
                 Ok(balance)
             }
             Err(_) => Err(AccountError::new(
@@ -98,7 +133,6 @@ impl<'a> AccountManager<'a> {
 #[cfg(test)]
 mod tests {
     use crate::internal::test_util::get_conn_with_new_db;
-    use std::str::FromStr;
 
     #[tokio::test]
     async fn test_create_account() {
@@ -129,7 +163,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(balance, sqlx::types::BigDecimal::from_str("0").unwrap());
+        assert_eq!(balance, 0.into());
     }
 
     #[tokio::test]
