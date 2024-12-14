@@ -16,14 +16,15 @@ impl<'a> TransactionManager<'a> {
     }
 
     async fn create_deposit(
-        amount: i64,
+        amount: u32,
         destination: &Account,
         conn: &mut sqlx::PgConnection,
-    ) -> Result<(), TransactionError> {
+    ) -> Result<(), Box<dyn BankError>> {
+        let amount_parsed: i64 = amount.into();
         let result = sqlx::query!(
             "INSERT INTO transaction (account_id, amount, type) VALUES ($1, $2, $3)",
             destination.id,
-            amount,
+            amount_parsed,
             "deposit"
         )
         .execute(conn)
@@ -34,23 +35,24 @@ impl<'a> TransactionManager<'a> {
                 return Ok(());
             }
             Err(e) => {
-                return Err(TransactionError::new(
+                return Err(Box::new(TransactionError::new(
                     e.to_string(),
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                ));
+                )));
             }
         }
     }
 
     async fn create_withdraw(
-        amount: i64,
+        amount: u32,
         origin: &Account,
         conn: &mut sqlx::PgConnection,
-    ) -> Result<(), TransactionError> {
+    ) -> Result<(), Box<dyn BankError>> {
+        let amount_parsed: i64 = amount.into();
         let result = sqlx::query!(
             "INSERT INTO transaction (account_id, amount, type) VALUES ($1, $2, $3)",
             origin.id,
-            -(amount.abs()),
+            -amount_parsed,
             "withdraw"
         )
         .execute(conn)
@@ -61,15 +63,18 @@ impl<'a> TransactionManager<'a> {
                 return Ok(());
             }
             Err(_) => {
-                return Err(TransactionError::new(
+                return Err(Box::new(TransactionError::new(
                     "Error on transaction".to_string(),
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                ));
+                )));
             }
         }
     }
 
-    pub async fn create_transaction(&self, transaction: Transaction) -> Result<(), impl BankError> {
+    pub async fn create_transaction(
+        &self,
+        transaction: Transaction,
+    ) -> Result<(), Box<dyn BankError>> {
         match transaction {
             Transaction::Deposit {
                 amount,
@@ -79,7 +84,17 @@ impl<'a> TransactionManager<'a> {
                     "Deposit: amount={:?}, destination={:?}",
                     amount, destination
                 );
-                let mut conn = self.db_pool.acquire().await.unwrap();
+
+                let mut conn = match self.db_pool.acquire().await {
+                    Ok(conn) => conn,
+                    Err(e) => {
+                        println!("Error getting connection: {}", e);
+                        return Err(Box::new(TransactionError::new(
+                            "An unexpected error happened, please try again".to_string(),
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        )));
+                    }
+                };
                 return TransactionManager::create_deposit(amount, &destination, &mut conn).await;
             }
             Transaction::Withdraw { amount, origin } => {
@@ -88,25 +103,45 @@ impl<'a> TransactionManager<'a> {
                 // On a transaction, get the balance, if its enough, proceed with the transaction
                 // if not, return an error
 
-                let mut tx = self.db_pool.begin().await.unwrap();
+                let mut tx = match self.db_pool.begin().await {
+                    Ok(tx) => tx,
+                    Err(e) => {
+                        println!("Error starting database transaction: {}", e);
+                        return Err(Box::new(TransactionError::new(
+                            "An unexpected error happened, please try again".to_string(),
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        )));
+                    }
+                };
 
-                let balance = AccountManager::get_balance(&origin, &mut tx).await.unwrap();
+                let balance = AccountManager::get_balance(&origin, &mut tx).await?;
 
-                if balance < amount.abs().into() {
-                    tx.rollback().await.unwrap();
-                    return Err(TransactionError::new(
+                if balance < amount.into() {
+                    if let Err(e) = tx.rollback().await {
+                        println!("Error rolling back transaction: {}", e);
+                    }
+                    return Err(Box::new(TransactionError::new(
                         "Insufficient funds".to_string(),
                         axum::http::StatusCode::BAD_REQUEST,
-                    ));
+                    )));
                 }
 
                 match TransactionManager::create_withdraw(amount, &origin, &mut tx).await {
                     Ok(_) => {
-                        tx.commit().await.unwrap();
+                        if let Err(err) = tx.commit().await {
+                            println!("Error committing transaction: {}", err);
+                            return Err(Box::new(TransactionError::new(
+                                "An unexpected error happened, please try again".to_string(),
+                                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            )));
+                        }
+
                         return Ok(());
                     }
                     Err(e) => {
-                        tx.rollback().await.unwrap();
+                        if let Err(e) = tx.rollback().await {
+                            println!("Error rolling back transaction: {}", e);
+                        }
                         return Err(e);
                     }
                 };
@@ -121,16 +156,27 @@ impl<'a> TransactionManager<'a> {
                     amount, origin, destination
                 );
 
-                let mut tx = self.db_pool.begin().await.unwrap();
+                let mut tx = match self.db_pool.begin().await {
+                    Ok(tx) => tx,
+                    Err(e) => {
+                        println!("Error starting database transaction: {}", e);
+                        return Err(Box::new(TransactionError::new(
+                            "An unexpected error happened, please try again".to_string(),
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        )));
+                    }
+                };
 
-                let balance = AccountManager::get_balance(&origin, &mut tx).await.unwrap();
+                let balance = AccountManager::get_balance(&origin, &mut tx).await?;
 
-                if balance < amount.abs().into() {
-                    tx.rollback().await.unwrap();
-                    return Err(TransactionError::new(
+                if balance < amount.into() {
+                    if let Err(e) = tx.rollback().await {
+                        println!("Error rolling back transaction: {}", e);
+                    }
+                    return Err(Box::new(TransactionError::new(
                         "Insufficient funds".to_string(),
                         axum::http::StatusCode::BAD_REQUEST,
-                    ));
+                    )));
                 }
 
                 let withdraw_result =
@@ -140,15 +186,26 @@ impl<'a> TransactionManager<'a> {
 
                 match (withdraw_result, deposit_result) {
                     (Ok(_), Ok(_)) => {
-                        tx.commit().await.unwrap();
+                        match tx.commit().await {
+                            Ok(_) => {}
+                            Err(e) => {
+                                println!("Error committing transaction: {}", e);
+                                return Err(Box::new(TransactionError::new(
+                                    "An unexpected error happened, please try again".to_string(),
+                                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                                )));
+                            }
+                        }
                         return Ok(());
                     }
                     _ => {
-                        tx.rollback().await.unwrap();
-                        return Err(TransactionError::new(
+                        if let Err(e) = tx.rollback().await {
+                            println!("Error rolling back transaction: {}", e);
+                        }
+                        return Err(Box::new(TransactionError::new(
                             "Error on transaction".to_string(),
                             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        ));
+                        )));
                     }
                 }
             }
@@ -173,7 +230,7 @@ mod tests {
         let account = account_manager.create_account().await.unwrap();
 
         let transaction = Transaction::Deposit {
-            amount: 100.into(),
+            amount: 100,
             destination: account.clone(),
         };
 
@@ -199,7 +256,7 @@ mod tests {
         let account = account_manager.create_account().await.unwrap();
 
         let transaction = Transaction::Deposit {
-            amount: 100.into(),
+            amount: 100,
             destination: account.clone(),
         };
 
@@ -208,7 +265,7 @@ mod tests {
         assert!(result.is_ok());
 
         let transaction = Transaction::Withdraw {
-            amount: 50.into(),
+            amount: 50,
             origin: account.clone(),
         };
 
@@ -223,7 +280,7 @@ mod tests {
         assert_eq!(balance, 50.into());
 
         let transaction = Transaction::Withdraw {
-            amount: (-25).into(),
+            amount: 25,
             origin: account.clone(),
         };
 
@@ -250,7 +307,7 @@ mod tests {
         let account = account_manager.create_account().await.unwrap();
 
         let transaction = Transaction::Deposit {
-            amount: 100.into(),
+            amount: 100,
             destination: account.clone(),
         };
 
@@ -259,7 +316,7 @@ mod tests {
         assert!(result.is_ok());
 
         let transaction = Transaction::Withdraw {
-            amount: 150.into(),
+            amount: 150,
             origin: account,
         };
 
@@ -281,7 +338,7 @@ mod tests {
         let account_destination = account_manager.create_account().await.unwrap();
 
         let transaction = Transaction::Deposit {
-            amount: 100.into(),
+            amount: 100,
             destination: account_origin.clone(),
         };
 
@@ -290,7 +347,7 @@ mod tests {
         assert!(result.is_ok());
 
         let transaction = Transaction::Transfer {
-            amount: 25.into(),
+            amount: 25,
             origin: account_origin.clone(),
             destination: account_destination.clone(),
         };

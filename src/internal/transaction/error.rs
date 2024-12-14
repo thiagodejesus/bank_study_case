@@ -20,3 +20,12 @@ impl BankError for TransactionError {
         &self.status
     }
 }
+
+impl From<Box<dyn BankError>> for TransactionError {
+    fn from(error: Box<dyn BankError>) -> Self {
+        Self {
+            message: error.message().to_string(),
+            status: error.status().clone(),
+        }
+    }
+}

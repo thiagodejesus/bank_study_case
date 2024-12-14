@@ -5,15 +5,15 @@ use crate::internal::account::domain::Account;
 #[derive(Deserialize, Debug)]
 pub enum Transaction {
     Deposit {
-        amount: i64,
+        amount: u32,
         destination: Account,
     },
     Withdraw {
-        amount: i64,
+        amount: u32,
         origin: Account,
     },
     Transfer {
-        amount: i64,
+        amount: u32,
         origin: Account,
         destination: Account,
     },

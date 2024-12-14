@@ -13,15 +13,15 @@ impl<'a> AccountManager<'a> {
         Self { db_pool }
     }
 
-    pub async fn create_account(&self) -> Result<Account, impl BankError> {
+    pub async fn create_account(&self) -> Result<Account, Box<dyn BankError>> {
         let mut tx = match self.db_pool.begin().await {
             Ok(tx) => tx,
             Err(e) => {
                 println!("Error starting database transaction: {}", e);
-                return Err(AccountError::new(
+                return Err(Box::new(AccountError::new(
                     "An unexpected error happened, please try again".to_string(),
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                ));
+                )));
             }
         };
 
@@ -29,10 +29,10 @@ impl<'a> AccountManager<'a> {
             Ok(conn) => conn,
             Err(e) => {
                 println!("Error getting database connection: {}", e);
-                return Err(AccountError::new(
+                return Err(Box::new(AccountError::new(
                     "An unexpected error happened, please try again".to_string(),
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                ));
+                )));
             }
         };
 
@@ -44,10 +44,10 @@ impl<'a> AccountManager<'a> {
             Ok(latest_number) => latest_number,
             Err(e) => {
                 println!("Error getting latest account number: {}", e);
-                return Err(AccountError::new(
+                return Err(Box::new(AccountError::new(
                     "An unexpected error happened, please try again".to_string(),
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                ));
+                )));
             }
         };
 
@@ -72,10 +72,10 @@ impl<'a> AccountManager<'a> {
                     }
                     Err(e) => {
                         println!("Error committing transaction: {}", e);
-                        return Err(AccountError::new(
+                        return Err(Box::new(AccountError::new(
                             "An unexpected error happened, please try again".to_string(),
                             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        ));
+                        )));
                     }
                 };
             }
@@ -84,32 +84,32 @@ impl<'a> AccountManager<'a> {
                     println!("Error rolling back transaction: {}", e);
                 }
 
-                return Err(AccountError::new(
+                return Err(Box::new(AccountError::new(
                     e.to_string(),
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                ));
+                )));
             }
         }
     }
 
-    pub async fn list_accounts(&self) -> Result<Vec<Account>, impl BankError> {
+    pub async fn list_accounts(&self) -> Result<Vec<Account>, Box<dyn BankError>> {
         let accounts = sqlx::query_as!(Account, "SELECT id, number FROM account")
             .fetch_all(self.db_pool)
             .await;
 
         match accounts {
             Ok(accounts) => Ok(accounts),
-            Err(e) => Err(AccountError::new(
+            Err(e) => Err(Box::new(AccountError::new(
                 e.to_string(),
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            )),
+            ))),
         }
     }
 
     pub async fn get_balance(
         account: &Account,
         conn: &mut sqlx::PgConnection,
-    ) -> Result<BigDecimal, impl BankError> {
+    ) -> Result<BigDecimal, Box<dyn BankError>> {
         let balance = sqlx::query!(
             "SELECT SUM(amount) FROM transaction WHERE account_id = $1",
             account.id()
@@ -122,10 +122,10 @@ impl<'a> AccountManager<'a> {
                 let balance = balance.sum.unwrap_or(0.into());
                 Ok(balance)
             }
-            Err(_) => Err(AccountError::new(
+            Err(_) => Err(Box::new(AccountError::new(
                 "Failed to get balance".to_string(),
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            )),
+            ))),
         }
     }
 }
