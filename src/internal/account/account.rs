@@ -13,6 +13,33 @@ impl<'a> AccountManager<'a> {
         Self { db_pool }
     }
 
+    pub async fn get_account_from_number(
+        &self,
+        number: i64,
+    ) -> Result<Account, Box<dyn BankError>> {
+        let account = sqlx::query_as!(
+            Account,
+            "SELECT id, number FROM account WHERE number = $1",
+            number
+        )
+        .fetch_optional(self.db_pool)
+        .await;
+
+        match account {
+            Ok(account) => match account {
+                Some(account) => Ok(account),
+                None => Err(Box::new(AccountError::new(
+                    format!("Account [{}] not found", number),
+                    axum::http::StatusCode::NOT_FOUND,
+                ))),
+            },
+            Err(e) => Err(Box::new(AccountError::new(
+                e.to_string(),
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            ))),
+        }
+    }
+
     pub async fn create_account(&self) -> Result<Account, Box<dyn BankError>> {
         let mut tx = match self.db_pool.begin().await {
             Ok(tx) => tx,

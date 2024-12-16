@@ -6,7 +6,6 @@ use axum::{
     Router,
 };
 use bank_case::internal::config::database::{Database, DatabaseParams};
-use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 
 pub struct AppState {
@@ -30,7 +29,9 @@ async fn main() {
 
     let pool = database.get_pool();
 
-    let app_state = Arc::new(AppState { pg_pool: pool.clone() });
+    let app_state = Arc::new(AppState {
+        pg_pool: pool.clone(),
+    });
 
     // build our application with a route
     let app = Router::new()
